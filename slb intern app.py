@@ -3762,8 +3762,12 @@ if st.session_state.show_nodal_analysis:
                 ax.grid(True, alpha=0.3)
                 
                 # Set axis limits
-                ax.set_xlim(0, max(sensitivity_results['ipr_flow_rates'].max(), sensitivity_results['flow_rates'].max()) * 1.1)
-                ax.set_ylim(0, max(sensitivity_results['ipr_pressures'].max(), max([vlp.max() for vlp in sensitivity_results['vlp_curves']])) * 1.1)
+                ipr_max = max(np.array(sensitivity_results['ipr_flow_rates']))
+                flow_max = max(np.array(sensitivity_results['flow_rates']))
+                ax.set_xlim(0, max(ipr_max, flow_max) * 1.1)
+                ipr_pressure_max = max(np.array(sensitivity_results['ipr_pressures']))
+                vlp_pressure_max = max([max(vlp) for vlp in sensitivity_results['vlp_curves']])
+                ax.set_ylim(0, max(ipr_pressure_max, vlp_pressure_max) * 1.1)
                 
                 # Add legend (limit to 10 items to avoid overcrowding)
                 handles, labels = ax.get_legend_handles_labels()
