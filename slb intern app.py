@@ -2294,3 +2294,1332 @@ if st.session_state.selected_tool == "Well schematics":
         plt.close(fig)
     except Exception as e:
         st.error(f"Error generating visualization: {str(e)}")
+
+# Add these functions at the top of your script, after imports but before any other code
+
+def find_intersection_point(q_ipr, p_ipr, q_vlp, p_vlp):
+    """
+    Find the intersection point between IPR and VLP curves.
+    Returns the intersection flow rate, pressure, and index.
+    """
+    # Interpolate VLP to match IPR flow rates
+    vlp_interp = np.interp(q_ipr, q_vlp, p_vlp)
+    
+    # Find minimum difference
+    diff = np.abs(p_ipr - vlp_interp)
+    idx = np.argmin(diff)
+    
+    # Get intersection point
+    q_intersect = q_ipr[idx]
+    p_intersect = (p_ipr[idx] + vlp_interp[idx]) / 2
+    
+    return q_intersect, p_intersect, idx
+def calculate_fluid_properties(fluid_data, pressure, temperature):
+    """Calculate fluid properties at given pressure and temperature"""
+    # Get fluid properties
+    water_cut = fluid_data.get('water_cut', 0.0)
+    API = fluid_data.get('API', 35.0)
+    gas_sg = fluid_data.get('gas_specific_gravity', 0.65)
+    water_sg = fluid_data.get('water_specific_gravity', 1.0)
+    GOR = fluid_data.get('GOR', 0.0)
+    
+    # Calculate densities
+    gamma_o = 141.5 / (API + 131.5)  # Oil specific gravity
+    rho_o_surface = gamma_o * 62.4  # Oil density at surface (lb/ft³)
+    rho_w_surface = water_sg * 62.4  # Water density at surface (lb/ft³)
+    
+    # Calculate formation volume factors (simplified)
+    # Oil formation volume factor (Standing correlation)
+    Rs = GOR  # Solution GOR (SCF/STB)
+    Bo = 0.9759 + 0.00012 * (Rs * (gas_sg / gamma_o)**0.5 + 1.25 * temperature)**1.2
+    
+    # Water formation volume factor (assumed constant)
+    Bw = 1.0
+    
+    # Gas formation volume factor
+    Z = 0.9  # Compressibility factor (simplified)
+    Bg = 0.0283 * Z * (temperature + 460) / pressure  # (ft³/SCF)
+    
+    # Calculate densities at downhole conditions
+    rho_o = rho_o_surface / Bo  # lb/ft³
+    rho_w = rho_w_surface / Bw  # lb/ft³
+    rho_g = 0.0764 * gas_sg * pressure / (Z * (temperature + 460))  # lb/ft³
+    
+    # Calculate mixture properties
+    rho_l = water_cut * rho_w + (1 - water_cut) * rho_o  # Liquid density
+    
+    return {
+        'rho_o': rho_o,
+        'rho_w': rho_w,
+        'rho_g': rho_g,
+        'rho_l': rho_l,
+        'Bo': Bo,
+        'Bw': Bw,
+        'Bg': Bg,
+        'Rs': Rs,
+        'water_cut': water_cut
+    }
+
+def calculate_vlp_with_casing(tubing_data, casing_data, fluid_data, wellhead_pressure, flow_rates, reservoir_temp, 
+                             tubing_shoe_depth, perforation_depth):
+    """
+    Calculate VLP curve including both casing and tubing sections.
+    Returns pressure values array (same length as flow_rates)
+    """
+    # Calculate segment lengths
+    casing_length = perforation_depth - tubing_shoe_depth
+    tubing_length = tubing_shoe_depth
+    
+    bhp_values = []
+    
+    for q in flow_rates:
+        if q == 0:
+            # At zero flow, BHP = wellhead pressure + hydrostatic head of entire column
+            # Get fluid properties
+            water_cut = fluid_data.get('water_cut', 0.0)
+            API = fluid_data.get('API', 35.0)
+            water_sg = fluid_data.get('water_specific_gravity', 1.0)
+            
+            gamma_o = 141.5 / (API + 131.5)
+            rho_o_surface = gamma_o * 62.4
+            rho_w_surface = water_sg * 62.4
+            rho_l_avg = water_cut * rho_w_surface + (1 - water_cut) * rho_o_surface
+            
+            # Total hydrostatic pressure
+            bhp = wellhead_pressure + (rho_l_avg * perforation_depth) / 144
+            bhp_values.append(bhp)
+            continue
+        
+        # Start with wellhead pressure
+        current_pressure = wellhead_pressure
+        
+        # 1. Calculate pressure drop in TUBING section (from wellhead to tubing shoe)
+        # Get tubing properties
+        tubing_id = tubing_data['ID(in)'].iloc[0]   # ft
+        tubing_roughness = tubing_data['Roughness(in)'].iloc[0]  # ft
+        
+        # Calculate pressure at tubing shoe
+        p_tubing_shoe = calculate_segment_pressure_drop(
+            current_pressure, q, tubing_id, tubing_roughness, tubing_length, 
+            fluid_data, reservoir_temp, 60  # Surface temp = 60°F
+        )
+        
+        # 2. Calculate pressure drop in CASING section (from tubing shoe to perforation)
+        # Get casing properties
+        casing_id = casing_data['ID(in)'].iloc[0]   # ft
+        casing_roughness = casing_data['Roughness(in)'].iloc[0]   # ft
+        
+        # Calculate temperature at tubing shoe (linear gradient)
+        temp_gradient = (reservoir_temp - 60) / perforation_depth  # °F/ft
+        temp_at_tubing_shoe = 60 + temp_gradient * tubing_shoe_depth
+        
+        # Calculate pressure at perforation
+        p_perforation = calculate_segment_pressure_drop(
+            p_tubing_shoe, q, casing_id, casing_roughness, casing_length, 
+            fluid_data, reservoir_temp, temp_at_tubing_shoe
+        )
+        
+        bhp_values.append(p_perforation)
+    
+    return np.array(bhp_values)
+
+def calculate_segment_pressure_drop(inlet_pressure, flow_rate, diameter, roughness, length, 
+                                   fluid_data, reservoir_temp, inlet_temp):
+    """
+    Calculate pressure drop for a single segment using Hagedorn and Brown correlation
+    """
+    # Constants
+    g = 32.174  # ft/s² (gravity)
+    A = np.pi * (diameter / 2) ** 2  # Cross-sectional area (ft²)
+    
+    # Fluid properties
+    water_cut = fluid_data.get('water_cut', 0.0)
+    API = fluid_data.get('API', 35.0)
+    gas_sg = fluid_data.get('gas_specific_gravity', 0.65)
+    water_sg = fluid_data.get('water_specific_gravity', 1.0)
+    GOR = fluid_data.get('GOR', 0.0)
+    
+    # Calculate densities
+    gamma_o = 141.5 / (API + 131.5)
+    rho_o_surface = gamma_o * 62.4
+    rho_w_surface = water_sg * 62.4
+    
+    # Surface tension calculation
+    sigma_o = 39 - 0.257 * API
+    sigma_w = 72
+    sigma_l = (1 - water_cut) * sigma_o + water_cut * sigma_w
+    
+    # Initial guess for outlet pressure
+    outlet_pressure = inlet_pressure + 500  # psi
+    
+    # Iterative calculation
+    for iteration in range(20):
+        # Average pressure and temperature
+        p_avg = (inlet_pressure + outlet_pressure) / 2
+        T_avg = (inlet_temp + reservoir_temp) / 2  # °F
+        
+        # Calculate fluid properties at average conditions
+        # Solution GOR using Standing correlation
+        Rs = gas_sg * ((p_avg / 18.2 + 1.4) * 10**(0.0125 * API - 0.00091 * T_avg))**1.2048
+        Rs = min(GOR, Rs)
+        
+        # Oil formation volume factor
+        Bo = 0.9759 + 0.00012 * (Rs * (gas_sg / gamma_o)**0.5 + 1.25 * T_avg)**1.2
+        
+        # Water formation volume factor
+        Bw = 1.0 + 1.2 * 10**-5 * (T_avg - 60) + 1.0 * 10**-6 * (T_avg - 60)**2
+        
+        # Gas formation volume factor
+        T_pr = (T_avg + 460) / (168 + 325 * gas_sg - 12.5 * gas_sg**2)
+        p_pr = p_avg / (677 + 15 * gas_sg - 37.5 * gas_sg**2)
+        Z = 0.701 - 0.000645 * p_pr - 0.016 * T_pr + 0.000044 * p_pr * T_pr
+        Z = max(0.7, min(1.2, Z))
+        Bg = 0.00504 * Z * (T_avg + 460) / p_avg
+        
+        # Calculate densities
+        rho_o = rho_o_surface / Bo
+        rho_w = rho_w_surface / Bw
+        rho_g = 0.0764 * gas_sg * (p_avg / 14.7) * (520 / (T_avg + 460)) / Z
+        rho_l = water_cut * rho_w + (1 - water_cut) * rho_o
+        
+        # Calculate flow rates
+        q_o = flow_rate * (1 - water_cut)
+        q_w = flow_rate * water_cut
+        q_o_res = q_o * Bo
+        q_w_res = q_w * Bw
+        q_g_free = max(0, (GOR - Rs) * q_o)
+        q_g_res = q_g_free * Bg
+        q_total = q_o_res + q_w_res + q_g_res
+        
+        # Convert to ft³/s
+        q_total_cfs = q_total * 5.615 / 86400
+        
+        # Superficial velocities
+        v_sl = (q_o_res + q_w_res) * 5.615 / 86400 / A
+        v_sg = q_g_res * 5.615 / 86400 / A
+        v_m = v_sl + v_sg
+        
+        # No-slip holdup
+        lambda_l = v_sl / v_m if v_m > 0 else 0
+        
+        # Dimensionless numbers
+        N_lv = 1.938 * v_sl * (rho_l / sigma_l)**0.25
+        N_gv = 1.938 * v_sg * (rho_l / sigma_l)**0.25
+        N_d = 120.872 * diameter * (rho_l / sigma_l)**0.5
+        
+        # Liquid viscosity
+        x = 10**(3.0324 - 0.02023 * API) * T_avg**(-1.163)
+        mu_od = 10**x - 1
+        A = 10.715 * (Rs + 100)**(-0.515)
+        B = 5.44 * (Rs + 150)**(-0.338)
+        mu_o = A * mu_od**B
+        mu_w = 1.0
+        mu_l = water_cut * mu_w + (1 - water_cut) * mu_o
+        
+        # N_L
+        N_l = 0.15726 * mu_l * (1 / (rho_l * sigma_l**3))**0.25
+        
+        # Parameter X
+        X = N_lv * (N_gv**0.38) / (N_d**2.14)
+        
+        # Viscosity correction factor
+        if N_l < 0.002:
+            psi = 1.0
+        elif N_l < 0.01:
+            psi = 1.0 + 30 * (N_l - 0.002)
+        elif N_l < 0.03:
+            psi = 1.0 + 30 * (0.01 - 0.002) + 20 * (N_l - 0.01)
+        elif N_l < 0.1:
+            psi = 1.0 + 30 * (0.01 - 0.002) + 20 * (0.03 - 0.01) + 10 * (N_l - 0.03)
+        else:
+            psi = 1.0 + 30 * (0.01 - 0.002) + 20 * (0.03 - 0.01) + 10 * (0.1 - 0.03)
+        
+        # Liquid holdup
+        HL = psi * (0.18 + 0.82 * X**0.25)
+        HL = max(lambda_l, min(0.95, HL))
+        
+        # Mixture properties
+        rho_m = HL * rho_l + (1 - HL) * rho_g
+        mu_g = 0.02
+        mu_m = HL * mu_l + (1 - HL) * mu_g
+        
+        # Reynolds number
+        Re_tp = 1488 * rho_m * v_m * diameter / mu_m
+        
+        # Friction factor
+        if Re_tp > 0:
+            f_tp = (1 / (-2 * np.log10((roughness/diameter)/3.7065 + 5.5452/Re_tp**0.9)))**2
+        else:
+            f_tp = 0.02
+        
+        # Pressure gradient
+        dp_dz_gravity = rho_m / 144
+        dp_dz_friction = f_tp * rho_m * v_m**2 / (2 * diameter * 144)
+        dp_dz = dp_dz_gravity + dp_dz_friction
+        
+        # Total pressure drop
+        dp_total = dp_dz * length
+        
+        # Update outlet pressure
+        outlet_pressure_new = inlet_pressure + dp_total
+        
+        # Check convergence
+        if abs(outlet_pressure_new - outlet_pressure) < 1:
+            outlet_pressure = outlet_pressure_new
+            break
+        else:
+            outlet_pressure = outlet_pressure_new
+    
+    return outlet_pressure
+# Nodal Analysis Section
+# Nodal Analysis Section
+if st.session_state.show_nodal_analysis:
+    st.header("Nodal Analysis 📊")
+    
+    # Initialize session state for nodal analysis if not exists
+    if 'nodal_data' not in st.session_state:
+        st.session_state.nodal_data = {
+            'well_configuration': {
+                'selected_completion': None,
+                'selected_tubing': None,
+                'manual_tubing_params': {
+                    'id': 2.441,  # Default 2-7/8" tubing ID
+                    'od': 2.875,  # Default 2-7/8" tubing OD
+                    'length': 5000,  # Default length in ft
+                    'roughness': 0.0006  # Default roughness in inches
+                }
+            },
+            'fluid_selection': None,
+            'outlet_pressure': 100.0,  # Default outlet pressure
+            'results': {},
+            'sensitivity': {
+                'parameter': None,
+                'start_value': None,
+                'end_value': None,
+                'step_value': None,
+                'results': {}
+            }
+        }
+    
+    # Create tabs for different parts of nodal analysis
+    tab1, tab2, tab3, tab4 = st.tabs(["🛢️ Well Configuration", "💧 Fluid Selection", "📈 Analysis", "🔍 Sensitivity Analysis"])
+    
+    with tab1:
+        st.subheader("Well Configuration")
+        st.write("Select well components for nodal analysis:")
+        
+        # Check if we have completions data
+        if 'completions' in st.session_state and st.session_state.completions:
+            completion_names = list(st.session_state.completions.keys())
+            selected_completion = st.selectbox(
+                "Select Completion",
+                options=completion_names,
+                index=0 if completion_names else None
+            )
+            
+            if selected_completion:
+                st.session_state.nodal_data['well_configuration']['selected_completion'] = selected_completion
+                
+                # Display completion details
+                completion_data = st.session_state.completions[selected_completion]
+                st.write(f"**Completion Type:** {completion_data['basic_info']['type']}")
+                st.write(f"**Geometry Profile:** {completion_data['basic_info']['geometry_profile']}")
+                st.write(f"**Middle MD (Perforation Depth):** {completion_data['basic_info']['middle_md']} ft")
+                st.write(f"**IPR Model:** {completion_data['basic_info']['ipr_model']}")
+                
+                # Check if we have tubular data
+                if 'Tubing' in st.session_state and not st.session_state.Tubing.empty:
+                    st.write("### Available Tubing Sections")
+                    st.dataframe(st.session_state.Tubing)
+                    
+                    # Let user select tubing section
+                    tubing_names = st.session_state.Tubing['Name'].tolist()
+                    selected_tubing = st.selectbox(
+                        "Select Tubing Section",
+                        options=tubing_names
+                    )
+                    
+                    if selected_tubing:
+                        st.session_state.nodal_data['well_configuration']['selected_tubing'] = selected_tubing
+                else:
+                    st.warning("No tubing data available. Please configure tubing in Well Design section or use manual parameters below.")
+                    
+                    # Provide manual tubing parameters input
+                    st.subheader("Manual Tubing Parameters")
+                    st.write("Enter tubing parameters manually:")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        tubing_id = st.number_input(
+                            "Tubing ID (inches)",
+                            min_value=0.5,
+                            max_value=10.0,
+                            value=st.session_state.nodal_data['well_configuration']['manual_tubing_params']['id'],
+                            step=0.125
+                        )
+                        
+                        tubing_od = st.number_input(
+                            "Tubing OD (inches)",
+                            min_value=0.5,
+                            max_value=10.0,
+                            value=st.session_state.nodal_data['well_configuration']['manual_tubing_params']['od'],
+                            step=0.125
+                        )
+                    
+                    with col2:
+                        tubing_length = st.number_input(
+                            "Tubing Length (ft)",
+                            min_value=100.0,
+                            max_value=30000.0,
+                            value=st.session_state.nodal_data['well_configuration']['manual_tubing_params']['length'],
+                            step=100.0
+                        )
+                        
+                        tubing_roughness = st.number_input(
+                            "Tubing Roughness (inches)",
+                            min_value=0.0001,
+                            max_value=0.01,
+                            value=st.session_state.nodal_data['well_configuration']['manual_tubing_params']['roughness'],
+                            step=0.0001,
+                            format="%.4f"
+                        )
+                    
+                    # Update manual parameters
+                    st.session_state.nodal_data['well_configuration']['manual_tubing_params'] = {
+                        'id': tubing_id,
+                        'od': tubing_od,
+                        'length': tubing_length,
+                        'roughness': tubing_roughness
+                    }
+                    
+                    st.info("Using manual tubing parameters for analysis.")
+        else:
+            st.warning("No completions available. Please create completions in Well Design section.")
+    
+    with tab2:
+        st.subheader("Fluid Selection")
+        st.write("Select fluid for analysis:")
+        
+        # Check if we have fluids data
+        if 'fluids' in st.session_state and st.session_state.fluids:
+            fluid_names = list(st.session_state.fluids.keys())
+            selected_fluid = st.selectbox(
+                "Select Fluid",
+                options=fluid_names,
+                index=0 if fluid_names else None
+            )
+            
+            if selected_fluid:
+                st.session_state.nodal_data['fluid_selection'] = selected_fluid
+                
+                # Display fluid properties
+                fluid_data = st.session_state.fluids[selected_fluid]
+                st.write("### Fluid Properties")
+                
+                if 'properties' in fluid_data and fluid_data['properties']:
+                    prop_df = pd.DataFrame(list(fluid_data['properties'].items()), 
+                                          columns=['Property', 'Value'])
+                    st.dataframe(prop_df)
+                else:
+                    st.info("No properties defined for this fluid.")
+        else:
+            st.warning("No fluids available. Please create fluids in Fluid Manager section.")
+    
+    with tab3:
+        st.subheader("Nodal Analysis")
+        st.write("Configure analysis parameters and run the simulation:")
+        
+        # Check if we have the required data
+        has_completion = ('well_configuration' in st.session_state.nodal_data and 
+                         'selected_completion' in st.session_state.nodal_data['well_configuration'] and
+                         st.session_state.nodal_data['well_configuration']['selected_completion'] is not None)
+        
+        has_fluid = ('fluid_selection' in st.session_state.nodal_data and 
+                   st.session_state.nodal_data['fluid_selection'] is not None)
+        
+        has_tubing = ('Tubing' in st.session_state and not st.session_state.Tubing.empty) or \
+                    ('manual_tubing_params' in st.session_state.nodal_data['well_configuration'])
+        
+        if not has_completion:
+            st.error("Please select a completion in the Well Configuration tab.")
+        elif not has_fluid:
+            st.error("Please select a fluid in the Fluid Selection tab.")
+        elif not has_tubing:
+            st.error("No tubing data available. Please configure tubing in Well Design section or enter manual parameters.")
+        else:
+            # Get the selected data
+            selected_completion = st.session_state.nodal_data['well_configuration']['selected_completion']
+            completion_data = st.session_state.completions[selected_completion]
+            
+            selected_fluid = st.session_state.nodal_data['fluid_selection']
+            fluid_data = st.session_state.fluids[selected_fluid]['properties']
+            
+            # Get tubing data - either from session state or manual parameters
+            if 'Tubing' in st.session_state and not st.session_state.Tubing.empty:
+                tubing_data = st.session_state.Tubing
+                use_manual_tubing = False
+            else:
+                # Create a DataFrame from manual parameters
+                manual_params = st.session_state.nodal_data['well_configuration']['manual_tubing_params']
+                tubing_data = pd.DataFrame({
+                    'Name': ['Manual Tubing'],
+                    'To MD': [manual_params['length']],
+                    'ID(in)': [manual_params['id']],
+                    'OD(in)': [manual_params['od']],
+                    'Roughness(in)': [manual_params['roughness']]
+                })
+                use_manual_tubing = True
+            
+            # Input parameters
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Outlet pressure (wellhead pressure)
+                outlet_pressure = st.number_input(
+                    "Outlet Pressure (Wellhead Pressure) (psi)",
+                    min_value=0.0,
+                    value=st.session_state.nodal_data.get('outlet_pressure', 100.0),
+                    step=10.0,
+                    help="This is the pressure at the outlet of the tubing (wellhead)"
+                )
+                st.session_state.nodal_data['outlet_pressure'] = outlet_pressure
+                
+                min_flow_rate = st.number_input(
+                    "Minimum Flow Rate (STB/D)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=10.0
+                )
+                
+                max_flow_rate = st.number_input(
+                    "Maximum Flow Rate (STB/D)",
+                    min_value=100.0,
+                    value=5000.0,
+                    step=100.0
+                )
+            
+            with col2:
+                # Flow correlation selection
+                flow_correlation = st.selectbox(
+                    "Flow Correlation",
+                    ["Hagedorn and Brown (Vertical)"],
+                    index=0,
+                    disabled=True  # Only Hagedorn and Brown for now
+                )
+                
+                # Number of points for curve generation
+                num_points = st.slider(
+                    "Number of Calculation Points",
+                    min_value=20,
+                    max_value=200,
+                    value=100,
+                    step=10
+                )
+                
+                # Reservoir temperature
+                reservoir_temp = st.number_input(
+                    "Reservoir Temperature (°F)",
+                    min_value=50.0,
+                    max_value=400.0,
+                    value=completion_data['reservoir'].get('reservoir_temperature', 180.0),
+                    step=1.0
+                )
+                
+                # Show tubing parameters being used
+                st.subheader("Tubing Parameters in Use")
+                if use_manual_tubing:
+                    st.write("**Using Manual Parameters:**")
+                    st.write(f"- ID: {manual_params['id']} inches")
+                    st.write(f"- OD: {manual_params['od']} inches")
+                    st.write(f"- Length: {manual_params['length']} ft")
+                    st.write(f"- Roughness: {manual_params['roughness']} inches")
+                else:
+                    st.write("**Using Tubing Data from Well Design:**")
+                    st.dataframe(tubing_data)
+            
+            # Run analysis button
+            if st.button("🚀 Run Nodal Analysis", type="primary"):
+                try:
+                    with st.spinner("Running nodal analysis..."):
+                        # Generate flow rate range
+                        flow_rates = np.linspace(min_flow_rate, max_flow_rate, num_points)
+                        
+                        # Get completion data
+                        selected_completion = st.session_state.nodal_data['well_configuration']['selected_completion']
+                        completion_data = st.session_state.completions[selected_completion]
+                        
+                        # Get perforation depth from completion data
+                        perforation_depth = completion_data['basic_info']['middle_md']
+                        
+                        # Get tubing data and tubing shoe depth
+                        if 'Tubing' in st.session_state and not st.session_state.Tubing.empty:
+                            tubing_data = st.session_state.Tubing
+                            
+                            # Get selected tubing if available, otherwise use the first one
+                            selected_tubing_name = st.session_state.nodal_data['well_configuration'].get('selected_tubing')
+                            if selected_tubing_name and selected_tubing_name in tubing_data['Name'].values:
+                                selected_tubing = tubing_data[tubing_data['Name'] == selected_tubing_name]
+                            else:
+                                selected_tubing = tubing_data.head(1)  # Use first tubing if none selected
+                            
+                            # Get tubing shoe depth from selected tubing
+                            tubing_shoe_depth = selected_tubing['To MD'].iloc[0]
+                            
+                            # Validate that tubing shoe is above perforation
+                            if tubing_shoe_depth >= perforation_depth:
+                                st.warning(f"Warning: Tubing shoe depth ({tubing_shoe_depth} ft) is at or below perforation depth ({perforation_depth} ft). Adjusting tubing shoe depth to be 200 ft above perforation.")
+                                tubing_shoe_depth = perforation_depth - 200  # Default 200 ft above
+                            
+                            # Get casing data
+                            if 'casing_liners' in st.session_state and not st.session_state.casing_liners.empty:
+                                casing_data = st.session_state.casing_liners
+                                
+                                # Find casing that covers the interval from tubing shoe to perforation
+                                # Look for casing with From MD <= tubing_shoe_depth and To MD >= perforation_depth
+                                suitable_casings = casing_data[
+                                    (casing_data['From MD'] <= tubing_shoe_depth) & 
+                                    (casing_data['To MD'] >= perforation_depth)
+                                ]
+                                
+                                if not suitable_casings.empty:
+                                    # Use the casing with the smallest ID (innermost)
+                                    casing_data = suitable_casings.sort_values('ID(in)').head(1)
+                                else:
+                                    # If no suitable casing found, use the innermost casing that covers the perforation
+                                    casing_at_perforation = casing_data[
+                                        (casing_data['From MD'] <= perforation_depth) & 
+                                        (casing_data['To MD'] >= perforation_depth)
+                                    ]
+                                    
+                                    if not casing_at_perforation.empty:
+                                        casing_data = casing_at_perforation.sort_values('ID(in)').head(1)
+                                        st.warning("Warning: No casing covers the entire interval from tubing shoe to perforation. Using casing that covers perforation depth.")
+                                    else:
+                                        # Fallback to first casing
+                                        casing_data = casing_data.head(1)
+                                        st.warning("Warning: No suitable casing found. Using first casing available.")
+                            else:
+                                # Create default casing data if none exists
+                                casing_data = pd.DataFrame({
+                                    'Section type': ['Casing'],
+                                    'Name': ['Default Casing'],
+                                    'From MD': [0],
+                                    'To MD': [perforation_depth],
+                                    'ID(in)': [8.0],  # Default 8" ID
+                                    'OD(in)': [8.625],  # Default 8-5/8" OD
+                                    'Wall thickness(in)': [0.3125],
+                                    'Roughness(in)': [0.0006]
+                                })
+                                st.info("No casing data available. Using default casing properties.")
+                            
+                            use_manual_tubing = False
+                        else:
+                            # Use manual tubing parameters
+                            manual_params = st.session_state.nodal_data['well_configuration']['manual_tubing_params']
+                            tubing_data = pd.DataFrame({
+                                'Name': ['Manual Tubing'],
+                                'To MD': [manual_params['length']],
+                                'ID(in)': [manual_params['id']],
+                                'OD(in)': [manual_params['od']],
+                                'Roughness(in)': [manual_params['roughness']]
+                            })
+                            tubing_shoe_depth = manual_params['length']
+                            
+                            # Validate that tubing shoe is above perforation
+                            if tubing_shoe_depth >= perforation_depth:
+                                st.warning(f"Warning: Tubing shoe depth ({tubing_shoe_depth} ft) is at or below perforation depth ({perforation_depth} ft). Adjusting tubing shoe depth to be 200 ft above perforation.")
+                                tubing_shoe_depth = perforation_depth - 200  # Default 200 ft above perforation
+                                manual_params['length'] = tubing_shoe_depth
+                            
+                            # Create default casing data for manual tubing
+                            casing_data = pd.DataFrame({
+                                'Section type': ['Casing'],
+                                'Name': ['Default Casing'],
+                                'From MD': [0],
+                                'To MD': [perforation_depth],
+                                'ID(in)': [8.0],  # Default 8" ID
+                                'OD(in)': [8.625],  # Default 8-5/8" OD
+                                'Wall thickness(in)': [0.3125],
+                                'Roughness(in)': [0.0006]
+                            })
+                            st.info("Using manual tubing parameters with default casing properties.")
+                            use_manual_tubing = True
+                        
+                        # Calculate IPR curve using the completion's IPR function
+                        # Generate flow rate range for IPR calculation
+                        ipr_flow_rates = np.linspace(0, max_flow_rate * 1.5, 200)  # Extended range for better intersection finding
+                        
+                        # Calculate IPR using the completion's IPR model
+                        ipr_model = completion_data['basic_info']['ipr_model']
+                        reservoir_pressure = completion_data['reservoir'].get('reservoir_pressure', 3000)
+                        
+                        # Initialize IPR pressures array
+                        ipr_pressures = []
+                        
+                        # Calculate IPR based on the selected model
+                        if ipr_model == 'Vogel':
+                            q_max = completion_data['reservoir'].get('max_flow_rate', 1000.0)
+                            c = completion_data['reservoir'].get('vogel_coefficient', 0.2)
+                            
+                            for q in ipr_flow_rates:
+                                if q == 0:
+                                    pwf = reservoir_pressure
+                                else:
+                                    # Solve Vogel equation for pwf
+                                    # q = q_max * [1 - (1-C)*(pwf/P_ws) - C*(pwf/P_ws)^2]
+                                    a = c
+                                    b = 1 - c
+                                    c_term = (q / q_max) - 1
+                                    
+                                    discriminant = b**2 - 4*a*c_term
+                                    if discriminant >= 0:
+                                        pwf_ratio = (-b + np.sqrt(discriminant)) / (2*a)
+                                        pwf = pwf_ratio * reservoir_pressure
+                                    else:
+                                        pwf = reservoir_pressure
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        elif ipr_model == 'Fetkovich':
+                            q_max = completion_data['reservoir'].get('max_flow_rate', 1000.0)
+                            n = completion_data['reservoir'].get('fetkovich_exponent', 1.0)
+                            
+                            for q in ipr_flow_rates:
+                                if q == 0:
+                                    pwf = reservoir_pressure
+                                else:
+                                    # Solve Fetkovich equation for pwf
+                                    pwf_ratio = np.sqrt(max(0, 1 - (q/q_max)**(1/n)))
+                                    pwf = pwf_ratio * reservoir_pressure
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        elif ipr_model == 'Jones':
+                            a = completion_data['reservoir'].get('jones_coefficient_a', 0.5)
+                            b = completion_data['reservoir'].get('jones_coefficient_b', 0.001)
+                            
+                            for q in ipr_flow_rates:
+                                if q == 0:
+                                    pwf = reservoir_pressure
+                                else:
+                                    pwf = reservoir_pressure - (a * q + b * q**2)
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        else:  # Well PI
+                            productivity_index = completion_data['reservoir'].get('productivity_index', 1.0)
+                            use_vogel = completion_data['reservoir'].get('use_vogel_below_bubble_point', False)
+                            
+                            # Calculate bubble point if needed
+                            pb = None
+                            if use_vogel and fluid_data:
+                                GOR = fluid_data.get('GOR', 500)
+                                gas_specific_gravity = fluid_data.get('gas_specific_gravity', 0.85)
+                                API = fluid_data.get('API', 35)
+                                reservoir_temperature = completion_data['reservoir'].get('reservoir_temperature', 180)
+                                
+                                try:
+                                    gamma_o = 141.5 / (API + 131.5)
+                                    pb = 18.2 * ((GOR * gas_specific_gravity) / gamma_o)**0.83 * \
+                                         10**(0.00091 * reservoir_temperature - 0.0125 * API)
+                                    pb = max(100, min(pb, reservoir_pressure * 0.95))
+                                except:
+                                    pb = reservoir_pressure * 0.8
+                            
+                            for q in ipr_flow_rates:
+                                if use_vogel and pb and q > productivity_index * (reservoir_pressure - pb):
+                                    # Below bubble point - use Vogel equation
+                                    qb = productivity_index * (reservoir_pressure - pb)
+                                    pwf = pb * (1 - 0.2 * ((q - qb) / (productivity_index * pb / 1.8)) - 
+                                                0.8 * ((q - qb) / (productivity_index * pb / 1.8))**2)
+                                else:
+                                    # Above bubble point - use straight-line PI
+                                    pwf = reservoir_pressure - (q / productivity_index)
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        # Convert to numpy array
+                        ipr_pressures = np.array(ipr_pressures)
+                        
+                        # Calculate VLP curve including both casing and tubing sections
+                        vlp_pressures = calculate_vlp_with_casing(
+                            tubing_data, casing_data, fluid_data, outlet_pressure, 
+                            flow_rates, reservoir_temp, tubing_shoe_depth, perforation_depth
+                        )
+                        
+                        # Find intersection point
+                        q_intersect, p_intersect, idx = find_intersection_point(ipr_flow_rates, ipr_pressures, flow_rates, vlp_pressures)
+                        
+                        # Store results
+                        st.session_state.nodal_data['results'] = {
+                            'q_ipr': ipr_flow_rates,
+                            'p_ipr': ipr_pressures,
+                            'q_vlp': flow_rates,
+                            'p_vlp': vlp_pressures,
+                            'q_intersect': q_intersect,
+                            'p_intersect': p_intersect,
+                            'idx_intersect': idx,
+                            'outlet_pressure': outlet_pressure,
+                            'flow_correlation': "Hagedorn and Brown (Vertical)",
+                            'use_manual_tubing': use_manual_tubing,
+                            'tubing_shoe_depth': tubing_shoe_depth,
+                            'perforation_depth': perforation_depth,
+                            'reservoir_temp': reservoir_temp,
+                            'analysis_complete': True
+                        }
+                        
+                        st.success("Nodal analysis completed successfully!")
+                except Exception as e:
+                    st.error(f"An error occurred during analysis: {str(e)}")
+                    st.session_state.nodal_data['results'] = {
+                        'analysis_complete': False,
+                        'error': str(e)
+                    }
+                        
+            # Display results if available
+            if 'results' in st.session_state.nodal_data and st.session_state.nodal_data['results']:
+                results = st.session_state.nodal_data['results']
+                
+                # Check if analysis was completed successfully
+                if results.get('analysis_complete', False):
+                    st.subheader("Analysis Results")
+                    
+                    # Display depth information
+                    st.write("**Well Configuration:**")
+                    st.write(f"- Perforation Depth: {results['perforation_depth']:.2f} ft")
+                    st.write(f"- Tubing Shoe Depth: {results['tubing_shoe_depth']:.2f} ft")
+                    st.write(f"- Casing Interval: {results['tubing_shoe_depth']:.2f} ft to {results['perforation_depth']:.2f} ft")
+                    
+                    # Display intersection point
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric(
+                            "Operating Flow Rate",
+                            f"{results['q_intersect']:.2f} STB/D",
+                            delta=None
+                        )
+                    
+                    with col2:
+                        st.metric(
+                            "Bottomhole Pressure",
+                            f"{results['p_intersect']:.2f} psi",
+                            delta=None
+                        )
+                    
+                    with col3:
+                        st.metric(
+                            "Outlet Pressure",
+                            f"{results['outlet_pressure']:.2f} psi",
+                            delta=None
+                        )
+                    
+                    # Plot curves
+                    st.subheader("IPR and VLP Curves")
+                    
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    
+                    # Plot IPR curve
+                    ax.plot(results['q_ipr'], results['p_ipr'], 'b-', linewidth=2, label='IPR Curve')
+                    
+                    # Plot VLP curve
+                    ax.plot(results['q_vlp'], results['p_vlp'], 'r-', linewidth=2, label='VLP Curve')
+                    
+                    # Plot intersection point
+                    ax.plot(results['q_intersect'], results['p_intersect'], 'go', markersize=10, label='Operating Point')
+                    
+                    # Add reservoir pressure line
+                    reservoir_pressure = completion_data['reservoir'].get('reservoir_pressure', 3000)
+                    ax.axhline(y=reservoir_pressure, color='k', linestyle='--', alpha=0.5, label='Reservoir Pressure')
+                    
+                    # Add outlet pressure line
+                    ax.axhline(y=results['outlet_pressure'], color='gray', linestyle='--', alpha=0.5, label='Outlet Pressure')
+                    
+                    # Formatting
+                    ax.set_xlabel('Flow Rate (STB/D)')
+                    ax.set_ylabel('Pressure (psi)')
+                    ax.set_title(f'Nodal Analysis - {selected_completion}')
+                    ax.grid(True, alpha=0.3)
+                    ax.legend()
+                    
+                    # Set axis limits
+                    ax.set_xlim(0, max(results['q_ipr'].max(), results['q_vlp'].max()) * 1.1)
+                    ax.set_ylim(0, max(results['p_ipr'].max(), results['p_vlp'].max()) * 1.1)
+                    
+                    st.pyplot(fig)
+                    
+                    # Display flow regime information
+                    st.subheader("Flow Regime Information")
+                    
+                    # Calculate flow parameters at operating point
+                    q_op = results['q_intersect']
+                    
+                    # Get fluid properties
+                    water_cut = fluid_data.get('water_cut', 0.0)
+                    GOR = fluid_data.get('GOR', 0.0)
+                    API = fluid_data.get('API', 35.0)
+                    gas_sg = fluid_data.get('gas_specific_gravity', 0.65)
+                    water_sg = fluid_data.get('water_specific_gravity', 1.0)
+                    
+                    # Calculate flow regime based on Beggs and Brill classification
+                    if q_op < 500:
+                        flow_regime = "Segregated Flow"
+                    elif q_op < 2000:
+                        flow_regime = "Intermittent Flow"
+                    else:
+                        flow_regime = "Distributed Flow"
+                    
+                    # Display flow regime information
+                    st.write(f"**Flow Regime at Operating Point:** {flow_regime}")
+                    
+                    # Add information about flow regimes
+                    with st.expander("Flow Regime Information"):
+                        st.markdown("""
+                        **Vertical Two Phase Flow Regimes:**
+                        
+                        - **Segregated Flow:** Gas phase is dispersed as small bubbles in a continuous liquid phase.
+                        - **Intermittent Flow:** Bubbles coalesce into larger bubbles that span the pipe diameter.
+                        - **Distributed Flow:** Liquid flows as a film on the pipe wall with gas in the center.
+                        
+                        **Beggs and Brill Correlation:**
+                        
+                        The Beggs and Brill correlation is used to calculate pressure drop in two-phase flow.
+                        It accounts for flow patterns, liquid holdup, and mixture properties.
+                        """)
+                    
+                    # Add download button for results
+                    st.subheader("Export Results")
+                    
+                    # Create results dataframe
+                    results_df = pd.DataFrame({
+                        'Flow Rate (STB/D)': results['q_ipr'],
+                        'IPR Pressure (psi)': results['p_ipr'],
+                        'VLP Pressure (psi)': np.interp(results['q_ipr'], results['q_vlp'], results['p_vlp'])
+                    })
+                    
+                    # Add operating point
+                    op_df = pd.DataFrame({
+                        'Flow Rate (STB/D)': [results['q_intersect']],
+                        'IPR Pressure (psi)': [results['p_intersect']],
+                        'VLP Pressure (psi)': [results['p_intersect']],
+                        'Type': ['Operating Point']
+                    })
+                    
+                    results_export = pd.concat([results_df, op_df], ignore_index=True)
+                    
+                    # Convert to CSV
+                    csv = results_export.to_csv(index=False).encode('utf-8')
+                    
+                    st.download_button(
+                        label="Download Results as CSV",
+                        data=csv,
+                        file_name=f"nodal_analysis_{selected_completion}.csv",
+                        mime='text/csv'
+                    )
+                else:
+                    # Show error message if analysis failed
+                    if 'error' in results:
+                        st.error(f"Analysis failed: {results['error']}")
+                    else:
+                        st.warning("Please run the analysis to see results.")
+    
+    with tab4:  # Sensitivity Analysis Tab
+        st.subheader("Sensitivity Analysis")
+        st.write("Analyze how changes in tubing parameters affect the VLP curve and operating point:")
+        
+        # Initialize sensitivity data if it doesn't exist
+        if 'sensitivity' not in st.session_state.nodal_data:
+            st.session_state.nodal_data['sensitivity'] = {
+                'parameter': None,
+                'start_value': None,
+                'end_value': None,
+                'step_value': None,
+                'results': {}
+            }
+        
+        # Check if base analysis has been run
+        if 'results' in st.session_state.nodal_data and st.session_state.nodal_data['results'].get('analysis_complete', False):
+            # Get base results
+            base_results = st.session_state.nodal_data['results']
+            
+            # Parameter selection
+            parameter = st.selectbox(
+                "Select Parameter for Sensitivity Analysis",
+                ["Tubing ID", "Tubing Roughness"]
+            )
+            
+            # Range inputs
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                start_value = st.number_input(
+                    "Start Value",
+                    min_value=0.5 if parameter == "Tubing ID" else 0.0001,
+                    max_value=10.0 if parameter == "Tubing ID" else 0.01,
+                    value=1.0 if parameter == "Tubing ID" else 0.0001,
+                    step=0.125 if parameter == "Tubing ID" else 0.0001,
+                    format="%.3f" if parameter == "Tubing ID" else "%.4f"
+                )
+            
+            with col2:
+                end_value = st.number_input(
+                    "End Value",
+                    min_value=0.5 if parameter == "Tubing ID" else 0.0001,
+                    max_value=10.0 if parameter == "Tubing ID" else 0.01,
+                    value=4.0 if parameter == "Tubing ID" else 0.002,
+                    step=0.125 if parameter == "Tubing ID" else 0.0001,
+                    format="%.3f" if parameter == "Tubing ID" else "%.4f"
+                )
+            
+            with col3:
+                step_value = st.number_input(
+                    "Step Value",
+                    min_value=0.01 if parameter == "Tubing ID" else 0.0001,
+                    max_value=1.0 if parameter == "Tubing ID" else 0.001,
+                    value=0.25 if parameter == "Tubing ID" else 0.0002,
+                    step=0.01 if parameter == "Tubing ID" else 0.0001,
+                    format="%.3f" if parameter == "Tubing ID" else "%.4f"
+                )
+            
+            # Run sensitivity analysis button
+            if st.button("🔍 Run Sensitivity Analysis", type="primary"):
+                try:
+                    with st.spinner("Running sensitivity analysis..."):
+                        # Generate parameter values
+                        param_values = np.arange(start_value, end_value + step_value, step_value)
+                        
+                        # Initialize results arrays
+                        q_op_values = []
+                        p_op_values = []
+                        vlp_curves = []  # Store full VLP curves for each parameter value
+                        
+                        # Get base data
+                        selected_completion = st.session_state.nodal_data['well_configuration']['selected_completion']
+                        completion_data = st.session_state.completions[selected_completion]
+                        selected_fluid = st.session_state.nodal_data['fluid_selection']
+                        fluid_data = st.session_state.fluids[selected_fluid]['properties']
+                        
+                        # Get perforation depth
+                        perforation_depth = completion_data['basic_info']['middle_md']
+                        
+                        # Get tubing data and casing data from base analysis
+                        if 'Tubing' in st.session_state and not st.session_state.Tubing.empty:
+                            base_tubing_data = st.session_state.Tubing
+                            
+                            # Get selected tubing if available, otherwise use the first one
+                            selected_tubing_name = st.session_state.nodal_data['well_configuration'].get('selected_tubing')
+                            if selected_tubing_name and selected_tubing_name in base_tubing_data['Name'].values:
+                                base_selected_tubing = base_tubing_data[base_tubing_data['Name'] == selected_tubing_name]
+                            else:
+                                base_selected_tubing = base_tubing_data.head(1)
+                            
+                            # Get tubing shoe depth
+                            tubing_shoe_depth = base_selected_tubing['To MD'].iloc[0]
+                            
+                            # Get casing data
+                            if 'casing_liners' in st.session_state and not st.session_state.casing_liners.empty:
+                                casing_data = st.session_state.casing_liners
+                                
+                                # Find casing that covers the interval from tubing shoe to perforation
+                                suitable_casings = casing_data[
+                                    (casing_data['From MD'] <= tubing_shoe_depth) & 
+                                    (casing_data['To MD'] >= perforation_depth)
+                                ]
+                                
+                                if not suitable_casings.empty:
+                                    casing_data = suitable_casings.sort_values('ID(in)').head(1)
+                                else:
+                                    # If no suitable casing found, use the innermost casing that covers the perforation
+                                    casing_at_perforation = casing_data[
+                                        (casing_data['From MD'] <= perforation_depth) & 
+                                        (casing_data['To MD'] >= perforation_depth)
+                                    ]
+                                    
+                                    if not casing_at_perforation.empty:
+                                        casing_data = casing_at_perforation.sort_values('ID(in)').head(1)
+                                    else:
+                                        # Fallback to first casing
+                                        casing_data = casing_data.head(1)
+                            else:
+                                # Create default casing data if none exists
+                                casing_data = pd.DataFrame({
+                                    'Section type': ['Casing'],
+                                    'Name': ['Default Casing'],
+                                    'From MD': [0],
+                                    'To MD': [perforation_depth],
+                                    'ID(in)': [8.0],
+                                    'OD(in)': [8.625],
+                                    'Wall thickness(in)': [0.3125],
+                                    'Roughness(in)': [0.0006]
+                                })
+                        else:
+                            # Use manual tubing parameters
+                            manual_params = st.session_state.nodal_data['well_configuration']['manual_tubing_params']
+                            tubing_shoe_depth = manual_params['length']
+                            
+                            # Create default casing data for manual tubing
+                            casing_data = pd.DataFrame({
+                                'Section type': ['Casing'],
+                                'Name': ['Default Casing'],
+                                'From MD': [0],
+                                'To MD': [perforation_depth],
+                                'ID(in)': [8.0],
+                                'OD(in)': [8.625],
+                                'Wall thickness(in)': [0.3125],
+                                'Roughness(in)': [0.0006]
+                            })
+                        
+                        # Get other parameters from base analysis
+                        outlet_pressure = base_results['outlet_pressure']
+                        reservoir_temp = base_results['reservoir_temp']
+                        
+                        # Get flow rate range from base analysis
+                        min_flow_rate = base_results['q_vlp'][0]
+                        max_flow_rate = base_results['q_vlp'][-1]
+                        num_points = len(base_results['q_vlp'])
+                        flow_rates = np.linspace(min_flow_rate, max_flow_rate, num_points)
+                        
+                        # Calculate IPR curve (same for all sensitivity runs)
+                        ipr_flow_rates = np.linspace(0, max_flow_rate * 1.5, 200)
+                        ipr_model = completion_data['basic_info']['ipr_model']
+                        reservoir_pressure = completion_data['reservoir'].get('reservoir_pressure', 3000)
+                        
+                        # Initialize IPR pressures array
+                        ipr_pressures = []
+                        
+                        # Calculate IPR based on the selected model
+                        if ipr_model == 'Vogel':
+                            q_max = completion_data['reservoir'].get('max_flow_rate', 1000.0)
+                            c = completion_data['reservoir'].get('vogel_coefficient', 0.2)
+                            
+                            for q in ipr_flow_rates:
+                                if q == 0:
+                                    pwf = reservoir_pressure
+                                else:
+                                    # Solve Vogel equation for pwf
+                                    a = c
+                                    b = 1 - c
+                                    c_term = (q / q_max) - 1
+                                    
+                                    discriminant = b**2 - 4*a*c_term
+                                    if discriminant >= 0:
+                                        pwf_ratio = (-b + np.sqrt(discriminant)) / (2*a)
+                                        pwf = pwf_ratio * reservoir_pressure
+                                    else:
+                                        pwf = reservoir_pressure
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        elif ipr_model == 'Fetkovich':
+                            q_max = completion_data['reservoir'].get('max_flow_rate', 1000.0)
+                            n = completion_data['reservoir'].get('fetkovich_exponent', 1.0)
+                            
+                            for q in ipr_flow_rates:
+                                if q == 0:
+                                    pwf = reservoir_pressure
+                                else:
+                                    pwf_ratio = np.sqrt(max(0, 1 - (q/q_max)**(1/n)))
+                                    pwf = pwf_ratio * reservoir_pressure
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        elif ipr_model == 'Jones':
+                            a = completion_data['reservoir'].get('jones_coefficient_a', 0.5)
+                            b = completion_data['reservoir'].get('jones_coefficient_b', 0.001)
+                            
+                            for q in ipr_flow_rates:
+                                if q == 0:
+                                    pwf = reservoir_pressure
+                                else:
+                                    pwf = reservoir_pressure - (a * q + b * q**2)
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        else:  # Well PI
+                            productivity_index = completion_data['reservoir'].get('productivity_index', 1.0)
+                            use_vogel = completion_data['reservoir'].get('use_vogel_below_bubble_point', False)
+                            
+                            # Calculate bubble point if needed
+                            pb = None
+                            if use_vogel and fluid_data:
+                                GOR = fluid_data.get('GOR', 500)
+                                gas_specific_gravity = fluid_data.get('gas_specific_gravity', 0.85)
+                                API = fluid_data.get('API', 35)
+                                reservoir_temperature = completion_data['reservoir'].get('reservoir_temperature', 180)
+                                
+                                try:
+                                    gamma_o = 141.5 / (API + 131.5)
+                                    pb = 18.2 * ((GOR * gas_specific_gravity) / gamma_o)**0.83 * \
+                                        10**(0.00091 * reservoir_temperature - 0.0125 * API)
+                                    pb = max(100, min(pb, reservoir_pressure * 0.95))
+                                except:
+                                    pb = reservoir_pressure * 0.8
+                            
+                            for q in ipr_flow_rates:
+                                if use_vogel and pb and q > productivity_index * (reservoir_pressure - pb):
+                                    # Below bubble point - use Vogel equation
+                                    qb = productivity_index * (reservoir_pressure - pb)
+                                    pwf = pb * (1 - 0.2 * ((q - qb) / (productivity_index * pb / 1.8)) - 
+                                                0.8 * ((q - qb) / (productivity_index * pb / 1.8))**2)
+                                else:
+                                    # Above bubble point - use straight-line PI
+                                    pwf = reservoir_pressure - (q / productivity_index)
+                                ipr_pressures.append(max(0, pwf))
+                        
+                        # Convert to numpy array
+                        ipr_pressures = np.array(ipr_pressures)
+                        
+                        # Run sensitivity analysis
+                        for param_value in param_values:
+                            # Create modified tubing data based on parameter being varied
+                            if 'Tubing' in st.session_state and not st.session_state.Tubing.empty:
+                                # Use the selected tubing from base analysis
+                                modified_tubing_data = base_selected_tubing.copy()
+                                
+                                # Update the parameter being varied
+                                if parameter == "Tubing ID":
+                                    modified_tubing_data['ID(in)'] = param_value
+                                else:  # Tubing Roughness
+                                    modified_tubing_data['Roughness(in)'] = param_value
+                            else:
+                                # Use manual tubing parameters
+                                manual_params = st.session_state.nodal_data['well_configuration']['manual_tubing_params'].copy()
+                                
+                                # Update the parameter being varied
+                                if parameter == "Tubing ID":
+                                    manual_params['id'] = param_value
+                                else:  # Tubing Roughness
+                                    manual_params['roughness'] = param_value
+                                
+                                modified_tubing_data = pd.DataFrame({
+                                    'Name': ['Manual Tubing'],
+                                    'To MD': [manual_params['length']],
+                                    'ID(in)': [manual_params['id']],
+                                    'OD(in)': [manual_params['od']],
+                                    'Roughness(in)': [manual_params['roughness']]
+                                })
+                            
+                            # Calculate VLP curve with modified tubing data
+                            vlp_pressures = calculate_vlp_with_casing(
+                                modified_tubing_data, casing_data, fluid_data, outlet_pressure, 
+                                flow_rates, reservoir_temp, tubing_shoe_depth, perforation_depth
+                            )
+                            
+                            # Store the full VLP curve
+                            vlp_curves.append(vlp_pressures)
+                            
+                            # Find intersection point
+                            q_intersect, p_intersect, idx = find_intersection_point(ipr_flow_rates, ipr_pressures, flow_rates, vlp_pressures)
+                            
+                            # Store results
+                            q_op_values.append(q_intersect)
+                            p_op_values.append(p_intersect)
+                        
+                        # Store sensitivity results
+                        st.session_state.nodal_data['sensitivity'] = {
+                            'parameter': parameter,
+                            'start_value': start_value,
+                            'end_value': end_value,
+                            'step_value': step_value,
+                            'param_values': param_values,
+                            'q_op_values': q_op_values,
+                            'p_op_values': p_op_values,
+                            'vlp_curves': vlp_curves,
+                            'ipr_flow_rates': ipr_flow_rates,
+                            'ipr_pressures': ipr_pressures,
+                            'flow_rates': flow_rates,
+                            'analysis_complete': True
+                        }
+                        
+                        st.success("Sensitivity analysis completed successfully!")
+                except Exception as e:
+                    st.error(f"An error occurred during sensitivity analysis: {str(e)}")
+                    st.session_state.nodal_data['sensitivity'] = {
+                        'analysis_complete': False,
+                        'error': str(e)
+                    }
+            
+            # Display sensitivity results if available
+            sensitivity_results = st.session_state.nodal_data.get('sensitivity', {})
+            if sensitivity_results.get('analysis_complete', False):
+                st.subheader("Sensitivity Analysis Results")
+                
+                # Create the main plot with IPR and multiple VLP curves
+                fig, ax = plt.subplots(figsize=(12, 8))
+                
+                # Plot IPR curve
+                ax.plot(sensitivity_results['ipr_flow_rates'], sensitivity_results['ipr_pressures'], 'b-', linewidth=3, label='IPR Curve')
+                
+                # Plot VLP curves for each parameter value
+                colors = plt.cm.viridis(np.linspace(0, 1, len(sensitivity_results['param_values'])))
+                
+                for i, (param_value, vlp_curve) in enumerate(zip(sensitivity_results['param_values'], sensitivity_results['vlp_curves'])):
+                    # Plot VLP curve
+                    ax.plot(sensitivity_results['flow_rates'], vlp_curve, color=colors[i], linewidth=1.5, 
+                            alpha=0.7, label=f'{parameter} = {param_value:.3f}')
+                    
+                    # Find and mark operating point
+                    q_intersect, p_intersect, idx = find_intersection_point(
+                        sensitivity_results['ipr_flow_rates'], 
+                        sensitivity_results['ipr_pressures'], 
+                        sensitivity_results['flow_rates'], 
+                        vlp_curve
+                    )
+                    ax.plot(q_intersect, p_intersect, 'o', color=colors[i], markersize=8)
+                
+                # Add reservoir pressure line
+                reservoir_pressure = completion_data['reservoir'].get('reservoir_pressure', 3000)
+                ax.axhline(y=reservoir_pressure, color='k', linestyle='--', alpha=0.5, label='Reservoir Pressure')
+                
+                # Add outlet pressure line
+                ax.axhline(y=base_results['outlet_pressure'], color='gray', linestyle='--', alpha=0.5, label='Outlet Pressure')
+                
+                # Formatting
+                ax.set_xlabel('Flow Rate (STB/D)')
+                ax.set_ylabel('Pressure (psi)')
+                ax.set_title(f'IPR and VLP Curves - Sensitivity to {parameter}')
+                ax.grid(True, alpha=0.3)
+                
+                # Set axis limits
+                ax.set_xlim(0, max(sensitivity_results['ipr_flow_rates'].max(), sensitivity_results['flow_rates'].max()) * 1.1)
+                ax.set_ylim(0, max(sensitivity_results['ipr_pressures'].max(), max([vlp.max() for vlp in sensitivity_results['vlp_curves']])) * 1.1)
+                
+                # Add legend (limit to 10 items to avoid overcrowding)
+                handles, labels = ax.get_legend_handles_labels()
+                if len(handles) > 10:
+                    # Show IPR, reservoir pressure, outlet pressure, and first 7 VLP curves
+                    important_handles = [handles[0], handles[-2], handles[-1]] + handles[1:8]
+                    important_labels = [labels[0], labels[-2], labels[-1]] + labels[1:8]
+                    ax.legend(important_handles, important_labels, loc='best')
+                else:
+                    ax.legend(loc='best')
+                
+                st.pyplot(fig)
+                                
+                # Display sensitivity data table
+                st.subheader("Sensitivity Data")
+                
+                sensitivity_df = pd.DataFrame({
+                    sensitivity_results["parameter"]: sensitivity_results['param_values'],
+                    'Operating Flow Rate (STB/D)': sensitivity_results['q_op_values'],
+                    'Bottomhole Pressure (psi)': sensitivity_results['p_op_values'],
+                    'Flow Rate Change (%)': [(q - base_results['q_intersect']) / base_results['q_intersect'] * 100 for q in sensitivity_results['q_op_values']],
+                    'Pressure Change (%)': [(p - base_results['p_intersect']) / base_results['p_intersect'] * 100 for p in sensitivity_results['p_op_values']]
+                })
+                
+                st.dataframe(sensitivity_df)
+                
+                # Add download button for sensitivity results
+                st.subheader("Export Sensitivity Results")
+                
+                # Convert to CSV
+                sensitivity_csv = sensitivity_df.to_csv(index=False).encode('utf-8')
+                
+                st.download_button(
+                    label="Download Sensitivity Results as CSV",
+                    data=sensitivity_csv,
+                    file_name=f"sensitivity_analysis_{sensitivity_results['parameter'].replace(' ', '_')}_{selected_completion}.csv",
+                    mime='text/csv'
+                )
+            else:
+                # Check if there was an error
+                if 'error' in sensitivity_results:
+                    st.error(f"Sensitivity analysis failed: {sensitivity_results['error']}")
+                else:
+                    st.info("Run the sensitivity analysis to see results.")
+        else:
+            st.warning("Please run the base nodal analysis first before running sensitivity analysis.")
