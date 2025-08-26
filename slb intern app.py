@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime
 import json
 import pickle
+import base64
 from wellarchitecturedesign import Tubular, Cement, Well, Tubing, Packer
 import os
 from scipy.optimize import fsolve
@@ -41,24 +42,164 @@ if "selected_tool" not in st.session_state:
     st.session_state.selected_tool = None
 if "MD_heat" not in st.session_state:
     st.session_state.MD_heat = pd.DataFrame(columns=['MD(ft)', 'Ambient Temperature'])
-
 if "TVD_heat" not in st.session_state:
     st.session_state.TVD_heat = pd.DataFrame(columns=['TVD(ft)', 'Ambient Temperature'])
-
 if "Tubing" not in st.session_state:
     st.session_state.Tubing = pd.DataFrame(columns=[
         'Name','To MD','ID(in)','OD(in)','Wall thickness(in)','Roughness(in)'
     ])
 if "casing_liners" not in st.session_state:
     st.session_state.casing_liners = pd.DataFrame(columns=['Section type','Name','From MD','To MD','ID(in)','OD(in)','Wall thickness(in)','Roughness(in)'])
-
 if "Completions" not in st.session_state:
     st.session_state.Completions = pd.DataFrame(columns=[
         'Name','Geometry Profile','Fluid entry','Middle MD (ft)','Type','Active','IPR model'
     ])
 
+# --- Session State Save/Load Functions ---
+def save_session_state():
+    """Convert session state to a JSON-serializable dictionary"""
+    def convert_numpy_to_python(obj):
+        """Recursively convert numpy arrays and scalars to Python types"""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+            return float(obj)
+        elif isinstance(obj, (np.bool_, np.bool)):
+            return bool(obj)
+        elif isinstance(obj, dict):
+            return {k: convert_numpy_to_python(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy_to_python(item) for item in obj]
+        else:
+            return obj
+    
+    data = {
+        'fluids': convert_numpy_to_python(st.session_state.fluids),
+        'survey_data_saved': {k: convert_numpy_to_python(v.to_dict()) for k, v in st.session_state.survey_data_saved.items()},
+        'current_survey_type': st.session_state.current_survey_type,
+        'survey_df': convert_numpy_to_python(st.session_state.survey_df.to_dict()) if not st.session_state.survey_df.empty else None,
+        'MD_heat': convert_numpy_to_python(st.session_state.MD_heat.to_dict()) if not st.session_state.MD_heat.empty else None,
+        'TVD_heat': convert_numpy_to_python(st.session_state.TVD_heat.to_dict()) if not st.session_state.TVD_heat.empty else None,
+        'Tubing': convert_numpy_to_python(st.session_state.Tubing.to_dict()) if not st.session_state.Tubing.empty else None,
+        'casing_liners': convert_numpy_to_python(st.session_state.casing_liners.to_dict()) if not st.session_state.casing_liners.empty else None,
+        'Completions': convert_numpy_to_python(st.session_state.Completions.to_dict()) if not st.session_state.Completions.empty else None,
+        'completions': convert_numpy_to_python(st.session_state.completions),
+        'nodal_data': convert_numpy_to_python(st.session_state.nodal_data) if 'nodal_data' in st.session_state else {},
+        'additional_data': convert_numpy_to_python(st.session_state.additional_data) if 'additional_data' in st.session_state else {},
+        'additional_data2': convert_numpy_to_python(st.session_state.additional_data2) if 'additional_data2' in st.session_state else {},
+        'selected_tool': st.session_state.selected_tool,
+        'show_well_design': st.session_state.show_well_design,
+        'show_fluid_manager': st.session_state.show_fluid_manager,
+        'show_nodal_analysis': st.session_state.show_nodal_analysis,
+        'selected_fluid': st.session_state.selected_fluid,
+        'selected_completion': st.session_state.selected_completion if 'selected_completion' in st.session_state else None,
+        'new_fluid_mode': st.session_state.new_fluid_mode,
+        'new_completion_mode': st.session_state.new_completion_mode if 'new_completion_mode' in st.session_state else False,
+        'casing_edit_complete': st.session_state.casing_edit_complete if 'casing_edit_complete' in st.session_state else False,
+        'tubing_edit_complete': st.session_state.tubing_edit_complete if 'tubing_edit_complete' in st.session_state else False,
+        'bottom_depth': st.session_state.bottom_depth if 'bottom_depth' in st.session_state else 0.0,
+        'wellhead_depth': st.session_state.wellhead_depth if 'wellhead_depth' in st.session_state else 0.0,
+        'depth_reference': st.session_state.depth_reference if 'depth_reference' in st.session_state else "Original RKB",
+        'survey_type': st.session_state.survey_type if 'survey_type' in st.session_state else "Vertical"
+    }
+    return data
 
-# --- Sidebar ---
+def load_session_state(data):
+    """Load session state from a dictionary"""
+    # Set a flag to indicate we're loading state to prevent recursion
+    if hasattr(st.session_state, '_loading_state') and st.session_state._loading_state:
+        return
+    
+    st.session_state._loading_state = True
+    
+    try:
+        # Clear existing state
+        keys_to_clear = [
+            'fluids', 'survey_data_saved', 'current_survey_type', 'survey_df', 
+            'MD_heat', 'TVD_heat', 'Tubing', 'casing_liners', 'Completions', 
+            'completions', 'nodal_data', 'additional_data', 'additional_data2',
+            'selected_tool', 'show_well_design', 'show_fluid_manager', 
+            'show_nodal_analysis', 'selected_fluid', 'selected_completion',
+            'new_fluid_mode', 'new_completion_mode', 'casing_edit_complete',
+            'tubing_edit_complete', 'bottom_depth', 'wellhead_depth',
+            'depth_reference', 'survey_type'
+        ]
+        
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        # Load new state
+        st.session_state.fluids = data.get('fluids', {})
+        
+        # Convert saved survey data back to DataFrames
+        survey_data = data.get('survey_data_saved', {})
+        st.session_state.survey_data_saved = {}
+        for k, v in survey_data.items():
+            st.session_state.survey_data_saved[k] = pd.DataFrame(v)
+        
+        st.session_state.current_survey_type = data.get('current_survey_type', "Vertical")
+        
+        if data.get('survey_df') is not None:
+            st.session_state.survey_df = pd.DataFrame(data['survey_df'])
+        else:
+            st.session_state.survey_df = pd.DataFrame()
+        
+        if data.get('MD_heat') is not None:
+            st.session_state.MD_heat = pd.DataFrame(data['MD_heat'])
+        else:
+            st.session_state.MD_heat = pd.DataFrame(columns=['MD(ft)', 'Ambient Temperature'])
+        
+        if data.get('TVD_heat') is not None:
+            st.session_state.TVD_heat = pd.DataFrame(data['TVD_heat'])
+        else:
+            st.session_state.TVD_heat = pd.DataFrame(columns=['TVD(ft)', 'Ambient Temperature'])
+        
+        if data.get('Tubing') is not None:
+            st.session_state.Tubing = pd.DataFrame(data['Tubing'])
+        else:
+            st.session_state.Tubing = pd.DataFrame(columns=['Name','To MD','ID(in)','OD(in)','Wall thickness(in)','Roughness(in)'])
+        
+        if data.get('casing_liners') is not None:
+            st.session_state.casing_liners = pd.DataFrame(data['casing_liners'])
+        else:
+            st.session_state.casing_liners = pd.DataFrame(columns=['Section type','Name','From MD','To MD','ID(in)','OD(in)','Wall thickness(in)','Roughness(in)'])
+        
+        if data.get('Completions') is not None:
+            st.session_state.Completions = pd.DataFrame(data['Completions'])
+        else:
+            st.session_state.Completions = pd.DataFrame(columns=['Name','Geometry Profile','Fluid entry','Middle MD (ft)','Type','Active','IPR model'])
+        
+        st.session_state.completions = data.get('completions', {})
+        st.session_state.nodal_data = data.get('nodal_data', {})
+        st.session_state.additional_data = data.get('additional_data', {})
+        st.session_state.additional_data2 = data.get('additional_data2', {})
+        
+        st.session_state.selected_tool = data.get('selected_tool', None)
+        st.session_state.show_well_design = data.get('show_well_design', False)
+        st.session_state.show_fluid_manager = data.get('show_fluid_manager', False)
+        st.session_state.show_nodal_analysis = data.get('show_nodal_analysis', False)
+        st.session_state.selected_fluid = data.get('selected_fluid', None)
+        st.session_state.selected_completion = data.get('selected_completion', None)
+        st.session_state.new_fluid_mode = data.get('new_fluid_mode', False)
+        st.session_state.new_completion_mode = data.get('new_completion_mode', False)
+        st.session_state.casing_edit_complete = data.get('casing_edit_complete', False)
+        st.session_state.tubing_edit_complete = data.get('tubing_edit_complete', False)
+        st.session_state.bottom_depth = data.get('bottom_depth', 0.0)
+        st.session_state.wellhead_depth = data.get('wellhead_depth', 0.0)
+        st.session_state.depth_reference = data.get('depth_reference', "Original RKB")
+        st.session_state.survey_type = data.get('survey_type', "Vertical")
+        
+    except Exception as e:
+        st.error(f"Error loading session state: {str(e)}")
+    finally:
+        # Reset the loading flag after a short delay
+        # This prevents immediate rerun while still allowing state to be loaded
+        if hasattr(st.session_state, '_loading_state'):
+            st.session_state._loading_state = False
+
 # --- Sidebar ---
 with st.sidebar:
     # Main Page / Home Button (always visible at top)
@@ -74,6 +215,52 @@ with st.sidebar:
         st.session_state.new_completion_mode = False
         st.rerun()
     
+    st.divider()
+    
+    # Save/Load Progress Section
+    st.subheader("💾 Save/Load Progress")
+    
+    # Save progress button
+    if st.button("Save Current Progress", type="primary", use_container_width=True):
+        # Convert session state to JSON
+        data = save_session_state()
+        json_str = json.dumps(data, indent=2)
+        
+        # Create download button
+        st.download_button(
+            label="Download Session Data",
+            data=json_str,
+            file_name=f"well_design_progress_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            key="download_session"
+        )
+        st.success("Session data ready for download!")
+    
+    st.divider()
+    
+    # Load progress section
+    st.subheader("📁 Load Progress")
+    uploaded_file = st.file_uploader("Upload your saved session", type="json", key="session_uploader")
+
+    if uploaded_file is not None:
+        try:
+            # Check if we've already processed this file
+            if 'last_uploaded_file' not in st.session_state or st.session_state.last_uploaded_file != uploaded_file.name:
+                # Read and parse the JSON file
+                json_str = uploaded_file.read().decode("utf-8")
+                data = json.loads(json_str)
+                
+                # Load into session state
+                load_session_state(data)
+                st.session_state.last_uploaded_file = uploaded_file.name
+                st.success("Progress loaded successfully!")
+                
+                # Use a button to trigger manual refresh instead of automatic rerun
+                if st.button("Refresh Page to Apply Changes"):
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Error loading progress: {str(e)}")
+        
     st.divider()
     
     # Well Design Section
@@ -3623,3 +3810,20 @@ if st.session_state.show_nodal_analysis:
                     st.info("Run the sensitivity analysis to see results.")
         else:
             st.warning("Please run the base nodal analysis first before running sensitivity analysis.")
+
+            
+# At the end of your app, add a section to show session info
+if st.session_state.show_well_design or st.session_state.show_fluid_manager or st.session_state.show_nodal_analysis:
+    st.sidebar.divider()
+    st.sidebar.caption(f"Session: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    
+    # Show session info
+    if st.sidebar.checkbox("Show Session Info"):
+        st.sidebar.json({
+            "fluids_count": len(st.session_state.fluids),
+            "completions_count": len(st.session_state.completions) if 'completions' in st.session_state else 0,
+            "selected_tool": st.session_state.selected_tool,
+            "show_well_design": st.session_state.show_well_design,
+            "show_fluid_manager": st.session_state.show_fluid_manager,
+            "show_nodal_analysis": st.session_state.show_nodal_analysis
+        })
