@@ -12,7 +12,6 @@ import os
 from scipy.optimize import fsolve
 from scipy.interpolate import interp1d
 
-
 # --- Session State Initialization ---
 if "show_well_design" not in st.session_state:
     st.session_state.show_well_design = False
@@ -55,7 +54,6 @@ if "Completions" not in st.session_state:
         'Name','Geometry Profile','Fluid entry','Middle MD (ft)','Type','Active','IPR model'
     ])
 # Add this section at the beginning of your app, before any other content
-
 # Project Description Section
 if not (st.session_state.show_well_design or st.session_state.show_fluid_manager or st.session_state.show_nodal_analysis):
     st.title("Well Design & Analysis Platform")
@@ -182,7 +180,6 @@ def save_session_state():
         'survey_type': st.session_state.survey_type if 'survey_type' in st.session_state else "Vertical"
     }
     return data
-
 def load_session_state(data):
     """Load session state from a dictionary"""
     # Set a flag to indicate we're loading state to prevent recursion
@@ -276,7 +273,6 @@ def load_session_state(data):
         # This prevents immediate rerun while still allowing state to be loaded
         if hasattr(st.session_state, '_loading_state'):
             st.session_state._loading_state = False
-
 # --- Sidebar ---
 with st.sidebar:
     # Main Page / Home Button (always visible at top)
@@ -318,7 +314,6 @@ with st.sidebar:
     # Load progress section
     st.subheader("📁 Load Progress")
     uploaded_file = st.file_uploader("Upload your saved session", type="json", key="session_uploader")
-
     if uploaded_file is not None:
         try:
             # Check if we've already processed this file
@@ -386,7 +381,6 @@ with st.sidebar:
         st.subheader("Nodal Analysis")
         if st.button("❌ Close Nodal Analysis"):
             st.session_state.show_nodal_analysis = False
-
 # Fluid Manager
 if st.session_state.show_fluid_manager:
     st.subheader('Fluid Manager 💧')
@@ -435,7 +429,6 @@ if st.session_state.show_fluid_manager:
                 'Created_date': fluid_info.get('Created_date', 'N/A'),
                 'Properties_count': len(fluid_info.get('properties', {}))
             })
-
         df_fluids = pd.DataFrame(fluids_list)
         
         # Create clickable buttons for each fluid
@@ -520,7 +513,6 @@ if st.session_state.show_fluid_manager:
                     step=0.1,
                     help="API gravity"
                 )
-
             
             # Notes field
             st.write("### Notes")
@@ -562,20 +554,16 @@ if st.session_state.show_fluid_manager:
                         st.session_state.selected_fluid = None
                         st.success("Fluid deleted!")
                         st.rerun()
-
      
-
 
 #Well Design
 if st.session_state.selected_tool:
     st.header(f"{st.session_state.selected_tool} ")
-
 # General tool
 if st.session_state.selected_tool == "General":
     st.text_input("Well Name")
     st.radio("Select the well type", ["production", "injection", "advanced"])
     st.radio("Check valve setting", ["Block none", "Block forward", "Block reverse", "Block both"])
-
 # survey tool
 if st.session_state.selected_tool == "Deviation survey":
     # Initialize session state variables if they don't exist
@@ -598,7 +586,6 @@ if st.session_state.selected_tool == "Deviation survey":
                           index=["Vertical", "2D", "3D"].index(st.session_state.survey_type),
                           key="survey_type_radio")
     st.session_state.survey_type = survey_type
-
     st.subheader("Reference Option")
     # Store depth reference in session state
     depth_reference = st.radio("Depth Reference", ["Original RKB", "RKB", "GL", "MSL", "THF", "Wellhead"],
@@ -617,13 +604,11 @@ if st.session_state.selected_tool == "Deviation survey":
                                   value=st.session_state.bottom_depth,
                                   key="bottom_depth_input")
     st.session_state.bottom_depth = bottom_depth
-
     # Only show table and plot for 2D/3D surveys
     if survey_type != "Vertical":
         # Define columns based on survey type
         columns_2d = ["MD (ft)", "TVD (ft)", "Horizontal Displacement (ft)", "Angle (°)"]
         columns_3d = ["MD (ft)", "TVD (ft)", "Horizontal Displacement (ft)", "Angle (°)", "Azimuth (°)", "Max Dogleg Severity (°/100ft)"]
-
         # Handle survey type change
         if st.session_state.current_survey_type != survey_type:
             # Load existing data or create new DataFrame
@@ -637,14 +622,12 @@ if st.session_state.selected_tool == "Deviation survey":
             
             # Update current survey type
             st.session_state.current_survey_type = survey_type
-
         # Ensure survey_df exists for current survey type
         if 'survey_df' not in st.session_state or st.session_state.survey_df.empty:
             if survey_type == "2D":
                 st.session_state.survey_df = pd.DataFrame({col: [0.0] for col in columns_2d})
             elif survey_type == "3D":
                 st.session_state.survey_df = pd.DataFrame({col: [0.0] for col in columns_3d})
-
         # Define column config for better editing experience
         if survey_type == "2D":
             column_config = {
@@ -662,7 +645,6 @@ if st.session_state.selected_tool == "Deviation survey":
                 "Azimuth (°)": st.column_config.NumberColumn("Azimuth (°)", min_value=0.0, max_value=360.0, step=0.1),
                 "Max Dogleg Severity (°/100ft)": st.column_config.NumberColumn("Max Dogleg Severity (°/100ft)", min_value=0.0, step=0.1),
             }
-
         # Editable table
         st.subheader("Enter Survey Data")
         
@@ -684,7 +666,6 @@ if st.session_state.selected_tool == "Deviation survey":
         
         # Always update session state with edited data
         st.session_state.survey_df = edited_data.copy()
-
         # Manual save button
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -699,7 +680,6 @@ if st.session_state.selected_tool == "Deviation survey":
                     st.session_state.survey_df = st.session_state.survey_data_saved[survey_type].copy()
                     st.success("Saved data loaded successfully!")
                     st.rerun()  # Only rerun when explicitly loading saved data
-
         # Show data status
         st.subheader("Data Status")
         col1, col2 = st.columns(2)
@@ -798,7 +778,6 @@ if st.session_state.selected_tool == "Heat transfer":
                 if depth_option == "MD":
                     if st.session_state.MD_heat.empty or 'MD(ft)' not in st.session_state.MD_heat.columns:
                         st.session_state.MD_heat = pd.DataFrame(columns=['MD(ft)', 'Ambient Temperature'])
-
                     with st.form("Md_heat_form"):  # Changed form key to be unique
                         edited_Md_heat_df = st.data_editor(
                             st.session_state.MD_heat,
@@ -811,7 +790,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_Md_heat',
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -822,7 +800,6 @@ if st.session_state.selected_tool == "Heat transfer":
                                 st.success("Data saved successfully!")
                             else:
                                 st.warning("Please fill in all data before saving.")
-
                     if not st.session_state.MD_heat.empty and 'MD(ft)' in st.session_state.MD_heat.columns and 'Ambient Temperature' in st.session_state.MD_heat.columns:
                         try:
                             fig, ax = plt.subplots()
@@ -844,7 +821,6 @@ if st.session_state.selected_tool == "Heat transfer":
                 else: # depth_option == "TVD"
                     if st.session_state.TVD_heat.empty or 'TVD(ft)' not in st.session_state.TVD_heat.columns:
                         st.session_state.TVD_heat = pd.DataFrame(columns=['TVD(ft)', 'Ambient Temperature'])
-
                     with st.form("TVD_heat_form"): # Changed form key to be unique
                         edited_TVD_heat_df = st.data_editor(
                             st.session_state.TVD_heat,
@@ -857,7 +833,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_TVD_heat_data', # Changed data_editor key to be unique
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -868,7 +843,6 @@ if st.session_state.selected_tool == "Heat transfer":
                                 st.success("Data saved successfully!")
                             else:
                                 st.warning("Please fill in all data before saving.")
-
                     if not st.session_state.TVD_heat.empty and 'TVD(ft)' in st.session_state.TVD_heat.columns and 'Ambient Temperature' in st.session_state.TVD_heat.columns:
                         try:
                             fig, ax = plt.subplots()
@@ -895,7 +869,6 @@ if st.session_state.selected_tool == "Heat transfer":
                   if depth_option == "MD":
                     if st.session_state.MD_heat.empty or 'MD(ft)' not in st.session_state.MD_heat.columns:
                         st.session_state.MD_heat = pd.DataFrame(columns=['MD(ft)', 'U value'])
-
                     with st.form("Md_heat_form"):  # Changed form key to be unique
                         edited_Md_heat_df = st.data_editor(
                             st.session_state.MD_heat,
@@ -908,7 +881,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_Md_heat',
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -919,7 +891,6 @@ if st.session_state.selected_tool == "Heat transfer":
                                 st.success("Data saved successfully!")
                             else:
                                 st.warning("Please fill in all data before saving.")
-
                     if not st.session_state.MD_heat.empty and 'MD(ft)' in st.session_state.MD_heat.columns and 'U value' in st.session_state.MD_heat.columns:
                         try:
                             fig, ax = plt.subplots()
@@ -941,7 +912,6 @@ if st.session_state.selected_tool == "Heat transfer":
                   else: # depth_option == "TVD"
                     if st.session_state.TVD_heat.empty or 'TVD(ft)' not in st.session_state.TVD_heat.columns:
                         st.session_state.TVD_heat = pd.DataFrame(columns=['TVD(ft)', 'U value'])
-
                     with st.form("TVD_heat_form"): # Changed form key to be unique
                         edited_TVD_heat_df = st.data_editor(
                             st.session_state.TVD_heat,
@@ -954,7 +924,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_TVD_heat_data', # Changed data_editor key to be unique
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -965,7 +934,6 @@ if st.session_state.selected_tool == "Heat transfer":
                                 st.success("Data saved successfully!")
                             else:
                                 st.warning("Please fill in all data before saving.")
-
                     if not st.session_state.TVD_heat.empty and 'TVD(ft)' in st.session_state.TVD_heat.columns and 'U value' in st.session_state.TVD_heat.columns:
                         try:
                             fig, ax = plt.subplots()
@@ -989,7 +957,6 @@ if st.session_state.selected_tool == "Heat transfer":
                   if depth_option == "MD":
                     if st.session_state.MD_heat.empty or 'MD(ft)' not in st.session_state.MD_heat.columns:
                         st.session_state.MD_heat = pd.DataFrame(columns=['MD(ft)', 'U value','Ambient Temperature'])
-
                     with st.form("Md_heat_form"):  # Changed form key to be unique
                         edited_Md_heat_df = st.data_editor(
                             st.session_state.MD_heat,
@@ -1003,7 +970,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_Md_heat',
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -1053,7 +1019,6 @@ if st.session_state.selected_tool == "Heat transfer":
                   else: # depth_option == "TVD"
                     if st.session_state.TVD_heat.empty or 'TVD(ft)' not in st.session_state.TVD_heat.columns:
                         st.session_state.TVD_heat = pd.DataFrame(columns=['TVD(ft)', 'U value','Ambient Temperature'])
-
                     with st.form("TVD_heat_form"): # Changed form key to be unique
                         edited_TVD_heat_df = st.data_editor(
                             st.session_state.TVD_heat,
@@ -1067,7 +1032,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_TVD_heat_data', # Changed data_editor key to be unique
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -1137,7 +1101,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_Md_heat',
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -1195,7 +1158,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_TVD_heat',
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -1236,7 +1198,6 @@ if st.session_state.selected_tool == "Heat transfer":
                         st.pyplot(fig)
                     except KeyError:
                         st.warning("Data columns are missing. Please re-enter your data.")
-
         else :
             depth_option = st.radio('Depth option', ["MD", "TVD"])
             if depth_option == "MD":
@@ -1257,7 +1218,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_Md_heat',
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -1317,7 +1277,6 @@ if st.session_state.selected_tool == "Heat transfer":
                             key='edited_TVD_heat_data', # Changed data_editor key to be unique
                             disabled=False
                         )
-
                         col1, col2 = st.columns(2)
                         with col1:
                             submitted = st.form_submit_button(" Save Data")
@@ -1376,13 +1335,11 @@ if 'additional_data' not in st.session_state:
 if 'additional_data2' not in st.session_state:
     st.session_state.additional_data2 = {}
 
-
 # The main application logic starts here, wrapped in a conditional block
 if st.session_state.selected_tool == "Tubulars":
     
     st.title("Tubulars Data Entry")
     st.markdown("---")
-
     # ------------------------------------------------
     # Section 1: Casing and Liner Data Editor
     # ------------------------------------------------
@@ -1409,7 +1366,6 @@ if st.session_state.selected_tool == "Tubulars":
         col1, col2 = st.columns(2)
         with col1:
             submitted = st.form_submit_button("✅ Save Casing/Liner Data")
-
         if submitted:
             # Check if any row has incomplete data
             incomplete_rows = False
@@ -1423,9 +1379,7 @@ if st.session_state.selected_tool == "Tubulars":
                 st.session_state.casing_liners = edited_casing_liners_df
                 st.session_state.casing_edit_complete = True
                 st.success("Casing/Liner data saved successfully!")
-
     st.markdown("---")
-
     # The additional details section for Casing/Liner
     if st.session_state.casing_edit_complete:
         st.subheader('Additional Casing/Liner Details')
@@ -1434,7 +1388,6 @@ if st.session_state.selected_tool == "Tubulars":
                 section_type = row['Section type']
                 section_name = row['Name']
                 st.subheader(f"Properties for: {section_name} ({section_type})")
-
                 with st.container():
                     if section_type in ['Casing', 'Liner']:
                         st.write(f'{section_type} Properties')
@@ -1482,13 +1435,11 @@ if st.session_state.selected_tool == "Tubulars":
                             value=st.session_state.additional_data.get(f'OpenHole_wellbore_diameter_{index}', 0.0),
                             key=f'OpenHole_wellbore_diameter_{index}'
                         )
-
             submitted_details = st.form_submit_button("💾 Save Additional Details")
-
             if submitted_details:
                 # Update the main storage dictionary with values from the form's keys
                 for index in range(len(st.session_state.casing_liners)):
-                    section_type = st.session_state.casing_liners.loc[index, 'Section type']
+                    section_type = st.session_state.casing_liners.iloc[index]['Section type']  # Fixed this line
                     if section_type in ['Casing', 'Liner']:
                         st.session_state.additional_data[f'density_{index}'] = st.session_state[f'density_input_{index}']
                         st.session_state.additional_data[f'thermal_cond_{index}'] = st.session_state[f'thermal_cond_input_{index}']
@@ -1499,7 +1450,6 @@ if st.session_state.selected_tool == "Tubulars":
                     elif section_type == 'Open hole':
                         st.session_state.additional_data[f'OpenHole_wellbore_diameter_{index}'] = st.session_state[f'OpenHole_wellbore_diameter_{index}']
                 st.success("Additional details saved!")
-
     st.markdown("---")
     
     # ------------------------------------------------
@@ -1507,7 +1457,6 @@ if st.session_state.selected_tool == "Tubulars":
     # ------------------------------------------------
     if st.session_state.Tubing.empty or 'Name' not in st.session_state.Tubing.columns:
         st.session_state.Tubing = pd.DataFrame(columns=['Name','To MD','ID(in)','OD(in)','Wall thickness(in)','Roughness(in)'])
-
     with st.form("tubing_main_form"):
         st.header('Tubing')
         edited_Tubing_df = st.data_editor(
@@ -1528,7 +1477,6 @@ if st.session_state.selected_tool == "Tubulars":
         col1, col2 = st.columns(2)
         with col1:
             submitted = st.form_submit_button("✅ Save Tubing Data")
-
         if submitted:
             # Check if any row has incomplete data
             incomplete_rows = False
@@ -1542,9 +1490,7 @@ if st.session_state.selected_tool == "Tubulars":
                 st.session_state.Tubing = edited_Tubing_df
                 st.session_state.tubing_edit_complete = True
                 st.success("Tubing data saved successfully!")
-
     st.markdown("---")
-
     # The additional details section for Tubing
     if st.session_state.tubing_edit_complete:
         st.subheader('Additional Tubing Details')
@@ -1598,7 +1544,6 @@ if st.session_state.selected_tool == "Tubulars":
                     st.session_state.additional_data2[f'fluid_denisty_{index}'] = st.session_state[f'fluid_density_input_{index}']
                     st.session_state.additional_data2[f'fluid_thermal_cond_{index}'] = st.session_state[f'fluid_thermal_cond_input_{index}']
                 st.success("Additional details saved!")
-
 
 # ------------------------------------------------
     # Completions
@@ -1813,19 +1758,15 @@ def calculate_and_plot_ipr(completion_data, fluid_properties):
     ax.legend()
     plt.tight_layout()
     return fig, pb, aof
-
 if st.session_state.selected_tool == "Completions":
     st.subheader('Completions Manager 🔧')
     # Initialize completions data if not exists
     if 'completions' not in st.session_state:
         st.session_state.completions = {}
-
     if 'selected_completion' not in st.session_state:
         st.session_state.selected_completion = None
-
     if 'new_completion_mode' not in st.session_state:
         st.session_state.new_completion_mode = False
-
     # Main completions management
     if not st.session_state.selected_completion:
         if not st.session_state.new_completion_mode:
@@ -1897,7 +1838,6 @@ if st.session_state.selected_tool == "Completions":
                     if st.form_submit_button("❌ Cancel"):
                         st.session_state.new_completion_mode = False
                         st.rerun()
-
     # Display completions table - FIXED THIS LINE
     if 'completions' in st.session_state and st.session_state.completions:
         st.write('### Your Completions')
@@ -1928,7 +1868,6 @@ if st.session_state.selected_tool == "Completions":
                     st.write(f"**Fluid:** {fluid_status}")
                 
                 st.divider()
-
     # Completion Properties Editor
     if st.session_state.selected_completion:
         completion_name = st.session_state.selected_completion
@@ -2347,7 +2286,6 @@ if st.session_state.selected_tool == "Completions":
                     st.session_state.confirm_delete = True
                     st.warning("Click delete again to confirm")
                     st.rerun()
-
     # Summary statistics - FIXED THIS LINE TOO
     if 'completions' in st.session_state and st.session_state.completions:
         st.divider()
@@ -2371,7 +2309,6 @@ if st.session_state.selected_tool == "Completions":
         with col4:
             completion_rate = (completions_with_fluids / total_completions * 100) if total_completions > 0 else 0
             st.metric("Configuration Complete", f"{completion_rate:.0f}%")
-
             
 #Well schematics
 if st.session_state.selected_tool == "Well schematics":
@@ -2558,9 +2495,7 @@ if st.session_state.selected_tool == "Well schematics":
         plt.close(fig)
     except Exception as e:
         st.error(f"Error generating visualization: {str(e)}")
-
 # Add these functions at the top of your script, after imports but before any other code
-
 def find_intersection_point(q_ipr, p_ipr, q_vlp, p_vlp):
     """
     Find the intersection point between IPR and VLP curves.
@@ -2623,7 +2558,6 @@ def calculate_fluid_properties(fluid_data, pressure, temperature):
         'Rs': Rs,
         'water_cut': water_cut
     }
-
 def calculate_vlp_with_casing(tubing_data, casing_data, fluid_data, wellhead_pressure, flow_rates, reservoir_temp, 
                              tubing_shoe_depth, perforation_depth):
     """
@@ -2686,7 +2620,6 @@ def calculate_vlp_with_casing(tubing_data, casing_data, fluid_data, wellhead_pre
         bhp_values.append(p_perforation)
     
     return np.array(bhp_values)
-
 def calculate_segment_pressure_drop(inlet_pressure, flow_rate, diameter, roughness, length, 
                                    fluid_data, reservoir_temp, inlet_temp):
     """
@@ -3891,7 +3824,6 @@ if st.session_state.show_nodal_analysis:
                     st.info("Run the sensitivity analysis to see results.")
         else:
             st.warning("Please run the base nodal analysis first before running sensitivity analysis.")
-
             
 # At the end of your app, add a section to show session info
 if st.session_state.show_well_design or st.session_state.show_fluid_manager or st.session_state.show_nodal_analysis:
