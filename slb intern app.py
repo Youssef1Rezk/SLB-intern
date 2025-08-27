@@ -54,7 +54,84 @@ if "Completions" not in st.session_state:
     st.session_state.Completions = pd.DataFrame(columns=[
         'Name','Geometry Profile','Fluid entry','Middle MD (ft)','Type','Active','IPR model'
     ])
+# Add this section at the beginning of your app, before any other content
 
+# Project Description Section
+if not (st.session_state.show_well_design or st.session_state.show_fluid_manager or st.session_state.show_nodal_analysis):
+    st.title("Well Design & Analysis Platform")
+    
+    # Project overview
+    st.markdown("""
+    ## Project Overview
+    This comprehensive well engineering platform integrates multiple tools for well design, fluid management, 
+    and production analysis. Developed during an SLB internship, this application draws inspiration from 
+    industry-standard software like PIPESIM while providing an intuitive web-based interface.
+    """)
+    
+    # Features section
+    st.markdown("""
+    ## Key Features
+    
+    ### 🛢️ Well Design Tools
+    - **General Well Configuration**: Set well type, valve settings, and basic parameters
+    - **Deviation Survey**: Input and visualize well trajectory data (Vertical, 2D, and 3D)
+    - **Heat Transfer Analysis**: Model temperature profiles and heat transfer coefficients
+    - **Tubular Design**: Design casing, liner, and tubing strings with detailed properties
+    - **Completion Design**: Configure completion types and inflow performance relationships
+    - **Well Schematics**: Generate visual representations of well architecture
+    
+    ### 💧 Fluid Management
+    - Create and manage fluid properties database
+    - Define comprehensive fluid characteristics (water cut, GOR, specific gravities, API)
+    - Associate fluids with completion configurations
+    
+    ### 📊 Nodal Analysis
+    - Integrated production system analysis
+    - IPR/VLP curve generation and intersection finding
+    - Sensitivity analysis for tubing parameters
+    - Flow regime identification and visualization
+    """)
+    
+    # Technology stack
+    st.markdown("""
+    ## Technology Stack
+    - **Frontend**: Streamlit for interactive web application
+    - **Backend**: Python with scientific computing libraries (NumPy, SciPy, Pandas)
+    - **Visualization**: Matplotlib for engineering plots and charts
+    - **Data Management**: Session state persistence with save/load functionality
+    """)
+    
+    # Inspiration
+    st.markdown("""
+    ## Inspiration
+    This project was developed during an SLB internship and draws inspiration from:
+    - **PIPESIM**: Industry-standard multiphase flow simulation software
+    - **Wellcat**: Thermal and mechanical wellbore analysis software
+    - **Commercial well design suites**: Integrating multiple well engineering functions into a unified platform
+    """)
+    
+    # Getting started section
+    st.markdown("""
+    ## Getting Started
+    1. Use the sidebar to navigate between different tools
+    2. Begin with **Well Design** to configure your well architecture
+    3. Create fluids in the **Fluid Manager** for use in analysis
+    4. Run **Nodal Analysis** to optimize production parameters
+    5. Save your progress using the Save/Load functionality
+    """)
+    
+    # Add some visual elements
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info("**Well Design**\n\nConfigure well architecture and completion strategies")
+    with col2:
+        st.info("**Fluid Management**\n\nDefine fluid properties for accurate simulations")
+    with col3:
+        st.info("**Nodal Analysis**\n\nOptimize production through system analysis")
+    
+    # Add a footer
+    st.markdown("---")
+    st.caption("Developed during SLB Internship | Inspired by PIPESIM | 2025")
 # --- Session State Save/Load Functions ---
 def save_session_state():
     """Convert session state to a JSON-serializable dictionary"""
