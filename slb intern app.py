@@ -11,6 +11,20 @@ from wellarchitecturedesign import Tubular, Cement, Well, Tubing, Packer
 import os
 from scipy.optimize import fsolve
 from scipy.interpolate import interp1d
+# .streamlit/secrets.toml
+password = "3132003"
+import streamlit as st
+
+st.title("Login")
+
+password = st.text_input("Enter password", type="password")
+
+if password == st.secrets["password"]:
+    st.success("Access granted!")
+    st.write("Your app content goes here...")
+else:
+    st.error("Wrong password")
+
 
 # --- Session State Initialization ---
 if "show_well_design" not in st.session_state:
@@ -3840,3 +3854,4 @@ if st.session_state.show_well_design or st.session_state.show_fluid_manager or s
             "show_fluid_manager": st.session_state.show_fluid_manager,
             "show_nodal_analysis": st.session_state.show_nodal_analysis
         })
+
