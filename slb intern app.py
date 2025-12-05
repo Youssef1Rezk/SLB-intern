@@ -17,13 +17,24 @@ import streamlit as st
 
 st.title("Login")
 
+st.title("Secure App")
+
+# Ask for password
 password = st.text_input("Enter password", type="password")
 
-if password == st.secrets["password"]:
-    st.success("Access granted!")
-    st.write("Your app content goes here...")
-else:
-    st.error("Wrong password")
+# Check password
+if "password" not in st.secrets:
+    st.error("Password not set in Streamlit secrets!")
+    st.stop()
+
+if password != st.secrets["password"]:
+    st.warning("🔒 Wrong password. Please enter the correct password.")
+    st.stop()  # STOP the app here for wrong password
+
+# Only runs if password is correct
+st.success("✅ Access granted!")
+st.write("Your secure app content goes here...")
+
 
 
 # --- Session State Initialization ---
@@ -3854,4 +3865,5 @@ if st.session_state.show_well_design or st.session_state.show_fluid_manager or s
             "show_fluid_manager": st.session_state.show_fluid_manager,
             "show_nodal_analysis": st.session_state.show_nodal_analysis
         })
+
 
